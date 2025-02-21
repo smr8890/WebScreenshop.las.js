@@ -49,7 +49,7 @@
 
 | 插件名称 | 作者 | 下载传送门 | 备注说明 |
 |---------|------|------|----------|
-| WebScreenshop.las.js | [@buling_jian](https://gitee.com/buling_jian/web-screenshop.las.js) | [下载传送门](https://github.com/buling-jian/WebScreenshop.las.js) | 高性能美化输出截图 |
+| WebScreenshop.las.js | [@buling_jian](https://gitee.com/buling_jian/web-screenshop.las.js) | [下载传送门](https://github.com/buling-jian/WebScreenshop.las.js/blob/main/WebScreenshop.las.js) | 高性能美化输出截图 |
 
 2. 下载本js文件，将文件放入 Yunzai-Bot 的 plugins/example 目录下
 
