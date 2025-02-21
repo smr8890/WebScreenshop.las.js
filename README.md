@@ -44,6 +44,12 @@
 3. Chrome 浏览器
 
 ### 安装步骤
+💫 方式一：使用 curl 命令安装（推荐）
+复制对应的命令执行即可：
+```bash
+curl -o "./plugins/example/WebScreenshop.las.js" "https://raw.githubusercontent.com/buling-jian/WebScreenshop.las.js/main/WebScreenshop.las.js"
+```
+💫 方式二：手动安装
 1. 点击下面插件链接进入插件页面
 ## 插件列表
 
