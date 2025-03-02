@@ -492,6 +492,7 @@ const browserManager = {
                 '--disable-component-extensions-with-background-pages',
                 '--mute-audio',
                 '--window-size=1280,800',
+                '--proxy-server=http://127.0.0.1:7890',
             ],
             ignoreHTTPSErrors: true,
             defaultViewport: {
