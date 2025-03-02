@@ -32,7 +32,7 @@ const qqGroup = '303104111';
 const BROWSER_POOL = {
     maxInstances: 2,               // 最大浏览器实例数
     maxPagesPerInstance: 3,        // 每个实例最大页面数
-    maxIdleTime: 1 * 60 * 1000,    // 最大空闲时间 (5分钟后自动关闭)
+    maxIdleTime: 5 * 60 * 1000,    // 最大空闲时间 (5分钟后自动关闭)
 };
 
 // 高级缓存配置
@@ -119,7 +119,7 @@ const cacheManager = {
         // 异步加载缓存，不阻塞启动流程
         setTimeout(() => {
             this.loadFromDisk().catch(error => {
-                console.warn('[网页预览] 从磁盘加载缓存失败:', error.message);
+                logger.warn('[网页预览] 从磁盘加载缓存失败:', error.message);
             });
         }, 10000); // 延迟10秒加载缓存，不影响启动速度
     },
@@ -181,7 +181,7 @@ const cacheManager = {
                 timestamp: Date.now()
             }));
         } catch (error) {
-            console.warn('[网页预览] 缓存持久化失败:', error.message);
+            logger.warn('[网页预览] 缓存持久化失败:', error.message);
         }
     },
 
@@ -213,10 +213,10 @@ const cacheManager = {
             }
 
             if (loadedCount > 0) {
-                console.info(`[网页预览] 已加载 ${loadedCount} 个缓存项`);
+                logger.info(`[网页预览] 已加载 ${loadedCount} 个缓存项`);
             }
         } catch (error) {
-            console.warn('[网页预览] 从磁盘加载缓存失败:', error.message);
+            logger.warn('[网页预览] 从磁盘加载缓存失败:', error.message);
         }
     },
 
@@ -239,7 +239,7 @@ const cacheManager = {
             }
 
             if (expiredCount > 0) {
-                console.info(`[网页预览] 已清理 ${expiredCount} 个过期缓存项`);
+                logger.info(`[网页预览] 已清理 ${expiredCount} 个过期缓存项`);
             }
         }, CACHE_CONFIG.cleanupInterval);
     }
@@ -441,7 +441,7 @@ const browserManager = {
 
         // 如果实例不存在或已满，创建新实例
         if (!browserInstance) {
-            console.info('[网页预览] 创建新的浏览器实例');
+            logger.info('[网页预览] 创建新的浏览器实例');
             browserInstance = await this.launchBrowser();
             browserStatus.activePages = 1;
             browserStatus.lastUsed = Date.now();
@@ -454,7 +454,7 @@ const browserManager = {
         }
 
         // 实例已满，则重置
-        console.info('[网页预览] 浏览器实例已满，重置实例');
+        logger.info('[网页预览] 浏览器实例已满，重置实例');
         await this.closeBrowser();
         browserInstance = await this.launchBrowser();
         browserStatus.activePages = 1;
@@ -472,7 +472,7 @@ const browserManager = {
 
         // 页面计数过高时重启浏览器
         if (browserStatus.pageCount > 20) {
-            console.info('[网页预览] 页面计数过高，重启浏览器实例');
+            logger.info('[网页预览] 页面计数过高，重启浏览器实例');
             setTimeout(() => {
                 this.closeBrowser().catch(() => { });
             }, 1000);
@@ -509,7 +509,7 @@ const browserManager = {
         try {
             return await puppeteer.launch(launchOptions);
         } catch (error) {
-            console.error('[网页预览] Puppeteer 实例初始化失败:', error);
+            logger.error('[网页预览] Puppeteer 实例初始化失败:', error);
             throw error;
         }
     },
@@ -526,7 +526,7 @@ const browserManager = {
                 continue;
             }
         }
-        console.warn('[网页预览] 未找到 Chrome 可执行文件，将尝试使用默认 Chromium');
+        logger.warn('[网页预览] 未找到 Chrome 可执行文件，将尝试使用默认 Chromium');
         return null;
     },
 
@@ -537,7 +537,7 @@ const browserManager = {
         try {
             await browserInstance.close();
         } catch (e) {
-            console.error('[网页预览] 关闭浏览器错误:', e.message);
+            logger.error('[网页预览] 关闭浏览器错误:', e.message);
         } finally {
             browserInstance = null;
             browserStatus.activePages = 0;
@@ -557,7 +557,7 @@ const browserManager = {
                 browserStatus.activePages === 0 &&
                 now - browserStatus.lastUsed > BROWSER_POOL.maxIdleTime) {
 
-                console.info('[网页预览] 关闭空闲浏览器实例');
+                logger.info('[网页预览] 关闭空闲浏览器实例');
                 this.closeBrowser().catch(() => { });
             }
         }, 60 * 1000); // 每分钟检查
@@ -621,7 +621,7 @@ export class WebScreenshot extends plugin {
             }
         });
 
-        console.info('[网页预览] 系统已初始化');
+        logger.info('[网页预览] 系统已初始化');
     }
 
     // 初始化配置 (仅加载必要配置)
@@ -640,7 +640,7 @@ export class WebScreenshot extends plugin {
                 this.saveConfig();
             }
         } catch (error) {
-            console.error('[网页预览] 加载配置失败:', error);
+            logger.error('[网页预览] 加载配置失败:', error);
             // 创建默认配置
             this.saveConfig();
         }
@@ -651,7 +651,7 @@ export class WebScreenshot extends plugin {
         try {
             fs.writeFileSync(configPath, JSON.stringify({ ownerOnlyMode }, null, 2));
         } catch (error) {
-            console.error('[网页预览] 保存配置失败:', error);
+            logger.error('[网页预览] 保存配置失败:', error);
         }
     }
 
@@ -709,7 +709,7 @@ export class WebScreenshot extends plugin {
         try {
             // 检查缓存
             if (!isForced && cacheManager.has(url)) {
-                console.info(`[网页预览] 使用缓存: ${url}`);
+                logger.info(`[网页预览] 使用缓存: ${url}`);
                 const cachedData = cacheManager.get(url);
                 await e.reply(segment.image(`base64://${cachedData.screenshot}`));
                 return true;
@@ -741,7 +741,7 @@ export class WebScreenshot extends plugin {
                 waitUntil: 'domcontentloaded',
                 timeout: 25000
             }).catch(error => {
-                console.warn(`[网页预览] 首次加载遇到错误: ${error.message}`);
+                logger.warn(`[网页预览] 首次加载遇到错误: ${error.message}`);
                 return page.goto(url, {
                     waitUntil: 'networkidle2',
                     timeout: 25000
@@ -757,7 +757,7 @@ export class WebScreenshot extends plugin {
                 messagePromise
             ]).catch(async error => {
                 if (error.message?.includes('Navigation')) {
-                    console.warn(`[网页预览] 页面导航错误，尝试继续处理: ${error.message}`);
+                    logger.warn(`[网页预览] 页面导航错误，尝试继续处理: ${error.message}`);
                     return [null, loadedReply];
                 }
                 throw error;
@@ -913,7 +913,7 @@ export class WebScreenshot extends plugin {
             const timeoutPromise = new Promise((_, reject) => {
                 setTimeout(() => {
                     accelerated = true;
-                    console.warn(`[网页预览] 截图超时 (${screenshotTimeout / 1000}秒)，已启用加速流程`);
+                    logger.warn(`[网页预览] 截图超时 (${screenshotTimeout / 1000}秒)，已启用加速流程`);
                     reject(new Error('Screenshot timed out'));
                 }, screenshotTimeout);
             });
@@ -923,7 +923,7 @@ export class WebScreenshot extends plugin {
                 if (error.message !== 'Screenshot timed out') {
                     throw error;
                 }
-                console.info('[网页预览] 执行加速流程完成');
+                logger.info('[网页预览] 执行加速流程完成');
             });
 
             // 保存截图到文件
@@ -943,7 +943,7 @@ export class WebScreenshot extends plugin {
 
             // 计算总处理时间
             const totalTime = Date.now() - startTime;
-            console.info(`[网页预览] 截图处理完成，耗时: ${totalTime}ms`);
+            logger.info(`[网页预览] 截图处理完成，耗时: ${totalTime}ms`);
 
             // 延迟撤回加载消息
             setTimeout(() => {
@@ -956,7 +956,7 @@ export class WebScreenshot extends plugin {
 
             return true;
         } catch (err) {
-            console.error(`[网页预览] [${processingStage}] 错误:`, err);
+            logger.error(`[网页预览] [${processingStage}] 错误:`, err);
 
             let errorMessage = `❌ 截图失败，具体原因：${err.message}`;
             const errorConfig = errorMessagesConfig.find(item => err.message?.includes(item.key));
@@ -977,7 +977,7 @@ export class WebScreenshot extends plugin {
                     browserManager.releaseBrowser();
                 }
             } catch (e) {
-                console.error('[网页预览] 资源清理错误:', e);
+                logger.error('[网页预览] 资源清理错误:', e);
             }
         }
     }
@@ -1006,7 +1006,7 @@ export class WebScreenshot extends plugin {
                 });
             });
         } catch (e) {
-            console.error('[网页预览] 清理截图失败:', e);
+            logger.error('[网页预览] 清理截图失败:', e);
         }
     }
 }
