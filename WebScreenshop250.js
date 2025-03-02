@@ -8,6 +8,7 @@
  *      4. ⚙️ **高级缓存**:  实现域名级缓存预热，二次截图几乎瞬间完成。
  *      5. 🛡️ **超强兼容**:  优化资源加载策略，兼容各类复杂网页，确保高成功率。
  *      6. 🔒 **权限控制**:  支持仅主人可用模式，保障安全与资源合理使用。
+ *      7. 🔋 **快速启动**:  优化启动性能，不影响机器人重启速度。
  *
  *  本插件由 亦米 制作，QQ 交流群：303104111 (欢迎加入，获取最新插件信息和技术支持)。
  */
@@ -18,7 +19,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import { promisify } from 'util';
 import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -33,7 +33,6 @@ const BROWSER_POOL = {
     maxInstances: 2,               // 最大浏览器实例数
     maxPagesPerInstance: 3,        // 每个实例最大页面数
     maxIdleTime: 5 * 60 * 1000,    // 最大空闲时间 (5分钟后自动关闭)
-    warmupUrls: ['https://www.baidu.com', 'https://www.qq.com'], // 预热地址
 };
 
 // 高级缓存配置
@@ -86,243 +85,44 @@ const configPath = path.join(configDir, 'screenshot_config.json');
 const cacheDir = path.join(__dirname, 'cache');
 const screenshotDir = path.join(__dirname, 'screenshots');
 
-// 确保所有目录存在
-[configDir, cacheDir, screenshotDir].forEach(dir => {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-});
-
-// 高级浏览器实例池管理
-const browserPool = {
-    // 实例存储
-    instances: [],
-    // 实例状态追踪
-    instanceStatus: new Map(),
-    // 域名缓存映射 (针对重复访问的优化)
-    domainPageCache: new Map(),
-    
-    // 获取可用浏览器实例
-    async getBrowser() {
-        // 优先查找有空闲页面的实例
-        const availableInstance = this.instances.find(instance => 
-            this.instanceStatus.get(instance).activePages < BROWSER_POOL.maxPagesPerInstance);
-        
-        if (availableInstance) {
-            const status = this.instanceStatus.get(availableInstance);
-            status.activePages++;
-            status.lastUsed = Date.now();
-            return availableInstance;
+// 确保所有目录存在 (延迟初始化)
+const ensureDirectories = () => {
+    [configDir, cacheDir, screenshotDir].forEach(dir => {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
         }
-        
-        // 如果没有可用实例且未达到池上限，创建新实例
-        if (this.instances.length < BROWSER_POOL.maxInstances) {
-            console.info('[网页预览] 创建新的浏览器实例');
-            const browser = await this.launchBrowser();
-            this.instances.push(browser);
-            this.instanceStatus.set(browser, {
-                activePages: 1,
-                lastUsed: Date.now(),
-                pageCount: 0
-            });
-            
-            // 设置实例关闭处理
-            browser.on('disconnected', () => {
-                this.instances = this.instances.filter(b => b !== browser);
-                this.instanceStatus.delete(browser);
-                console.info('[网页预览] 浏览器实例已断开连接');
-            });
-            
-            return browser;
-        }
-        
-        // 所有实例都满负荷，选择负载最小的
-        const leastBusyInstance = this.instances.reduce((prev, curr) => {
-            const prevStatus = this.instanceStatus.get(prev);
-            const currStatus = this.instanceStatus.get(curr);
-            return prevStatus.activePages <= currStatus.activePages ? prev : curr;
-        });
-        
-        const status = this.instanceStatus.get(leastBusyInstance);
-        status.activePages++;
-        status.lastUsed = Date.now();
-        return leastBusyInstance;
-    },
-    
-    // 释放浏览器实例资源
-    releaseBrowser(browser) {
-        if (!this.instanceStatus.has(browser)) return;
-        
-        const status = this.instanceStatus.get(browser);
-        status.activePages = Math.max(0, status.activePages - 1);
-        status.pageCount++;
-        
-        // 如果页面计数高，考虑重启实例以防内存泄漏
-        if (status.pageCount > 30) {
-            this.restartBrowser(browser);
-        }
-    },
-    
-    // 重启浏览器实例 (防止内存泄漏)
-    async restartBrowser(browser) {
-        if (!this.instanceStatus.has(browser)) return;
-        
-        console.info('[网页预览] 重启浏览器实例，防止内存泄漏');
-        
-        // 从池中移除
-        this.instances = this.instances.filter(b => b !== browser);
-        this.instanceStatus.delete(browser);
-        
-        // 异步关闭
-        browser.close().catch(e => console.error('[网页预览] 关闭浏览器错误:', e));
-        
-        // 创建新实例替代
-        const newBrowser = await this.launchBrowser();
-        this.instances.push(newBrowser);
-        this.instanceStatus.set(newBrowser, {
-            activePages: 0,
-            lastUsed: Date.now(),
-            pageCount: 0
-        });
-        
-        // 设置实例关闭处理
-        newBrowser.on('disconnected', () => {
-            this.instances = this.instances.filter(b => b !== newBrowser);
-            this.instanceStatus.delete(newBrowser);
-        });
-    },
-    
-    // 启动浏览器实例
-    async launchBrowser() {
-        const launchOptions = {
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-features=site-per-process', // 禁用站点隔离以减少内存使用
-                '--disable-features=TranslateUI',
-                '--disable-extensions',
-                '--disable-component-extensions-with-background-pages',
-                '--disable-default-apps',
-                '--mute-audio',
-                '--no-default-browser-check',
-                '--no-first-run',
-                '--use-gl=swiftshader', // 使用软件渲染，更稳定
-                '--window-size=1280,800',
-            ],
-            ignoreHTTPSErrors: true,
-            defaultViewport: {
-                width: 1280,
-                height: 800,
-                deviceScaleFactor: 1
-            },
-            timeout: 30000,
-        };
-
-        const chromePath = await WebScreenshot.findChromePath();
-        if (chromePath) launchOptions.executablePath = chromePath;
-
-        try {
-            const browser = await puppeteer.launch(launchOptions);
-            return browser;
-        } catch (error) {
-            console.error('[网页预览] Puppeteer 实例初始化失败:', error);
-            throw error;
-        }
-    },
-    
-    // 初始化池并预热
-    async init() {
-        try {
-            // 创建第一个实例并预热
-            const browser = await this.launchBrowser();
-            this.instances.push(browser);
-            this.instanceStatus.set(browser, {
-                activePages: 0,
-                lastUsed: Date.now(),
-                pageCount: 0
-            });
-            
-            // 预热浏览器 (访问常用站点以加快后续访问)
-            await this.warmupBrowser(browser);
-            
-            // 设置实例关闭处理
-            browser.on('disconnected', () => {
-                this.instances = this.instances.filter(b => b !== browser);
-                this.instanceStatus.delete(browser);
-            });
-            
-            // 设置定期清理
-            this.startMaintenanceInterval();
-            
-            console.info('[网页预览] 浏览器实例池初始化完成');
-        } catch (error) {
-            console.error('[网页预览] 浏览器实例池初始化失败:', error);
-        }
-    },
-    
-    // 浏览器预热 (加载常用网站)
-    async warmupBrowser(browser) {
-        try {
-            for (const url of BROWSER_POOL.warmupUrls) {
-                const page = await browser.newPage();
-                await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 })
-                    .catch(e => console.warn(`[网页预览] 预热页面 ${url} 加载失败:`, e.message));
-                await page.close();
-            }
-            console.info('[网页预览] 浏览器预热完成');
-        } catch (error) {
-            console.warn('[网页预览] 浏览器预热错误:', error.message);
-        }
-    },
-    
-    // 定期维护 (关闭空闲实例、重启过载实例)
-    startMaintenanceInterval() {
-        setInterval(() => {
-            const now = Date.now();
-            
-            // 检查空闲实例
-            this.instances.forEach(browser => {
-                const status = this.instanceStatus.get(browser);
-                
-                // 如果实例空闲且超过最大空闲时间，关闭它
-                if (status.activePages === 0 && 
-                    now - status.lastUsed > BROWSER_POOL.maxIdleTime &&
-                    this.instances.length > 1) { // 保留至少一个实例
-                    
-                    console.info('[网页预览] 关闭空闲浏览器实例');
-                    this.instances = this.instances.filter(b => b !== browser);
-                    this.instanceStatus.delete(browser);
-                    browser.close().catch(() => {});
-                }
-            });
-            
-            // 重新预热一个实例，确保始终有温暖的引擎
-            if (this.instances.length > 0) {
-                const warmInstance = this.instances[0];
-                this.warmupBrowser(warmInstance).catch(() => {});
-            }
-            
-        }, 60 * 1000); // 每分钟检查一次
-    },
-    
-    // 清理所有资源
-    async shutdown() {
-        for (const browser of this.instances) {
-            try {
-                await browser.close();
-            } catch (e) {}
-        }
-        this.instances = [];
-        this.instanceStatus.clear();
-        this.domainPageCache.clear();
-    }
+    });
 };
 
-// 高级缓存管理
+// 懒加载标志
+let systemInitialized = false;
+let browserInstance = null;
+const browserStatus = {
+    activePages: 0,
+    lastUsed: 0,
+    pageCount: 0
+};
+
+// 缓存管理 (延迟初始化)
 const cacheManager = {
     cache: new Map(),
+    initialized: false,
+    
+    // 初始化缓存 (懒加载)
+    async init() {
+        if (this.initialized || !CACHE_CONFIG.enabled) return;
+        
+        ensureDirectories();
+        this.initialized = true;
+        this.startCleanupInterval();
+        
+        // 异步加载缓存，不阻塞启动流程
+        setTimeout(() => {
+            this.loadFromDisk().catch(error => {
+                console.warn('[网页预览] 从磁盘加载缓存失败:', error.message);
+            });
+        }, 10000); // 延迟10秒加载缓存，不影响启动速度
+    },
     
     // 生成缓存键
     getCacheKey(url) {
@@ -332,6 +132,7 @@ const cacheManager = {
     // 检查缓存
     has(url) {
         if (!CACHE_CONFIG.enabled) return false;
+        if (!this.initialized) this.init();
         
         const key = this.getCacheKey(url);
         if (!this.cache.has(key)) return false;
@@ -357,6 +158,7 @@ const cacheManager = {
     // 设置缓存
     set(url, data) {
         if (!CACHE_CONFIG.enabled) return;
+        if (!this.initialized) this.init();
         
         const key = this.getCacheKey(url);
         this.cache.set(key, {
@@ -364,15 +166,17 @@ const cacheManager = {
             timestamp: Date.now()
         });
         
-        // 将缓存写入磁盘
-        this.persistCache(key, data);
+        // 将缓存写入磁盘 (异步操作不阻塞)
+        setTimeout(() => {
+            this.persistCache(key, data).catch(() => {});
+        }, 0);
     },
     
     // 持久化缓存到磁盘
     async persistCache(key, data) {
         try {
             const cachePath = path.join(cacheDir, `${key}.cache`);
-            await promisify(fs.writeFile)(cachePath, JSON.stringify({
+            fs.writeFileSync(cachePath, JSON.stringify({
                 data,
                 timestamp: Date.now()
             }));
@@ -384,29 +188,33 @@ const cacheManager = {
     // 从磁盘加载缓存
     async loadFromDisk() {
         try {
-            const files = await promisify(fs.readdir)(cacheDir);
+            const files = fs.readdirSync(cacheDir);
+            let loadedCount = 0;
             
             for (const file of files) {
                 if (!file.endsWith('.cache')) continue;
                 
                 try {
                     const cachePath = path.join(cacheDir, file);
-                    const data = JSON.parse(await promisify(fs.readFile)(cachePath, 'utf8'));
+                    const data = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
                     
                     // 只加载未过期的缓存
                     if (Date.now() - data.timestamp <= CACHE_CONFIG.expiration) {
                         const key = file.replace('.cache', '');
                         this.cache.set(key, data);
+                        loadedCount++;
                     } else {
                         // 删除过期缓存文件
-                        await promisify(fs.unlink)(cachePath);
+                        fs.unlinkSync(cachePath);
                     }
                 } catch (e) {
-                    console.warn(`[网页预览] 加载缓存文件 ${file} 失败:`, e.message);
+                    continue;
                 }
             }
             
-            console.info(`[网页预览] 已加载 ${this.cache.size} 个缓存项`);
+            if (loadedCount > 0) {
+                console.info(`[网页预览] 已加载 ${loadedCount} 个缓存项`);
+            }
         } catch (error) {
             console.warn('[网页预览] 从磁盘加载缓存失败:', error.message);
         }
@@ -434,36 +242,35 @@ const cacheManager = {
                 console.info(`[网页预览] 已清理 ${expiredCount} 个过期缓存项`);
             }
         }, CACHE_CONFIG.cleanupInterval);
-    },
-    
-    // 初始化缓存
-    async init() {
-        if (!CACHE_CONFIG.enabled) return;
-        
-        await this.loadFromDisk();
-        this.startCleanupInterval();
     }
 };
 
-// 预加载背景图片并缓存 - 一次性操作提高性能
-const backgroundImageCache = (() => {
+// 预加载背景图片路径（不阻塞启动）
+let backgroundImagePath = 'file://' + path.join(__dirname, 'resources', 'background.png');
+let backgroundImageCache = null;
+
+// 获取背景图片 (懒加载)
+const getBackgroundImage = () => {
+    if (backgroundImageCache) return backgroundImageCache;
+    
     try {
         const bgPath = path.join(__dirname, 'resources', 'background.png');
         if (fs.existsSync(bgPath)) {
-            // 直接使用base64编码的背景图片避免文件读取
+            // 转为base64
             const base64 = fs.readFileSync(bgPath).toString('base64');
-            return `data:image/png;base64,${base64}`;
+            backgroundImageCache = `data:image/png;base64,${base64}`;
+            return backgroundImageCache;
         }
-    } catch (e) {
-        console.warn('[网页预览] 背景图片缓存失败:', e.message);
-    }
+    } catch (e) {}
     
-    // 回退到文件路径
-    return 'file://' + path.join(__dirname, 'resources', 'background.png');
-})();
+    return backgroundImagePath;
+};
 
-// HTML模板缓存 - 提前生成模板框架部分
-const baseTemplate = (() => {
+// HTML模板生成 (延迟加载，不缓存整个模板)
+const getScreenTemplate = (screenshotBase64, title, logo) => {
+    const currTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
+    const bgImage = getBackgroundImage();
+    
     return `
     <!DOCTYPE html>
     <html lang="zh-CN">
@@ -485,7 +292,7 @@ const baseTemplate = (() => {
                 min-height: 100vh;
                 margin: 0;
                 -webkit-font-smoothing: antialiased;
-                background-image: url('${backgroundImageCache}');
+                background-image: url('${bgImage}');
                 background-size: cover;
                 background-repeat: no-repeat;
                 background-position: center center;
@@ -600,8 +407,8 @@ const baseTemplate = (() => {
             <div class="browser-window">
                 <div class="status-bar">
                     <div class="status-left">
-                        <img src="LOGO_PLACEHOLDER" class="status-logo" alt="Logo" onerror="this.style.display='none'">
-                        <span id="current-time">TIME_PLACEHOLDER</span>
+                        <img src="${logo}" class="status-logo" alt="Logo" onerror="this.style.display='none'">
+                        <span id="current-time">${currTime}</span>
                     </div>
                     <div class="status-right">
                         <i class="iconfont icon-xinhao"></i>
@@ -610,26 +417,150 @@ const baseTemplate = (() => {
                     </div>
                 </div>
                 <div class="dynamic-island">
-                    <img src="LOGO_PLACEHOLDER" alt="Logo" onerror="this.style.display='none'">
-                    <span>TITLE_PLACEHOLDER</span>
+                    <img src="${logo}" alt="Logo" onerror="this.style.display='none'">
+                    <span>${title}</span>
                 </div>
-                <img class="screenshot" src="SCREENSHOT_PLACEHOLDER" alt="TITLE_PLACEHOLDER">
+                <img class="screenshot" src="data:image/jpeg;base64,${screenshotBase64}" alt="${title}">
             </div>
         </div>
     </body>
     </html>
     `;
-})();
+};
 
-// 优化的模板渲染函数 - 使用快速字符串替换而非重新解析
-const screenRender = (screenshotBase64, title, logo) => {
-    const currTime = `${new Date().getHours().toString().padStart(2, '0')}:${new Date().getMinutes().toString().padStart(2, '0')}`;
+// 简化的浏览器管理
+const browserManager = {
+    // 获取或创建浏览器实例
+    async getBrowser() {
+        // 如果实例已存在且可用，返回它
+        if (browserInstance && browserStatus.activePages < BROWSER_POOL.maxPagesPerInstance) {
+            browserStatus.activePages++;
+            browserStatus.lastUsed = Date.now();
+            return browserInstance;
+        }
+        
+        // 如果实例不存在或已满，创建新实例
+        if (!browserInstance) {
+            console.info('[网页预览] 创建新的浏览器实例');
+            browserInstance = await this.launchBrowser();
+            browserStatus.activePages = 1;
+            browserStatus.lastUsed = Date.now();
+            browserStatus.pageCount = 0;
+            
+            // 定期检查关闭
+            this.startMaintenanceCheck();
+            
+            return browserInstance;
+        }
+        
+        // 实例已满，则重置
+        console.info('[网页预览] 浏览器实例已满，重置实例');
+        await this.closeBrowser();
+        browserInstance = await this.launchBrowser();
+        browserStatus.activePages = 1;
+        browserStatus.lastUsed = Date.now();
+        browserStatus.pageCount = 0;
+        return browserInstance;
+    },
     
-    return baseTemplate
-        .replace(/LOGO_PLACEHOLDER/g, logo)
-        .replace(/TITLE_PLACEHOLDER/g, title)
-        .replace(/TIME_PLACEHOLDER/g, currTime)
-        .replace(/SCREENSHOT_PLACEHOLDER/g, `data:image/jpeg;base64,${screenshotBase64}`);
+    // 释放浏览器资源
+    releaseBrowser() {
+        if (!browserInstance) return;
+        
+        browserStatus.activePages = Math.max(0, browserStatus.activePages - 1);
+        browserStatus.pageCount++;
+        
+        // 页面计数过高时重启浏览器
+        if (browserStatus.pageCount > 20) {
+            console.info('[网页预览] 页面计数过高，重启浏览器实例');
+            setTimeout(() => {
+                this.closeBrowser().catch(() => {});
+            }, 1000);
+        }
+    },
+    
+    // 启动浏览器
+    async launchBrowser() {
+        const launchOptions = {
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-features=site-per-process',
+                '--disable-extensions',
+                '--disable-component-extensions-with-background-pages',
+                '--mute-audio',
+                '--window-size=1280,800',
+            ],
+            ignoreHTTPSErrors: true,
+            defaultViewport: {
+                width: 1280,
+                height: 800,
+                deviceScaleFactor: 1
+            },
+            timeout: 30000,
+        };
+
+        const chromePath = await this.findChromePath();
+        if (chromePath) launchOptions.executablePath = chromePath;
+
+        try {
+            return await puppeteer.launch(launchOptions);
+        } catch (error) {
+            console.error('[网页预览] Puppeteer 实例初始化失败:', error);
+            throw error;
+        }
+    },
+    
+    // 查找Chrome路径
+    async findChromePath() {
+        const paths = chromePaths[process.platform] || chromePaths.linux;
+        for (const p of paths) {
+            try {
+                if (fs.existsSync(p)) {
+                    return p;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+        console.warn('[网页预览] 未找到 Chrome 可执行文件，将尝试使用默认 Chromium');
+        return null;
+    },
+    
+    // 关闭浏览器
+    async closeBrowser() {
+        if (!browserInstance) return;
+        
+        try {
+            await browserInstance.close();
+        } catch (e) {
+            console.error('[网页预览] 关闭浏览器错误:', e.message);
+        } finally {
+            browserInstance = null;
+            browserStatus.activePages = 0;
+            browserStatus.pageCount = 0;
+        }
+    },
+    
+    // 定期检查，关闭空闲浏览器
+    startMaintenanceCheck() {
+        if (this.maintenanceInterval) return;
+        
+        this.maintenanceInterval = setInterval(() => {
+            const now = Date.now();
+            
+            // 如果浏览器空闲且超过最大空闲时间，关闭它
+            if (browserInstance && 
+                browserStatus.activePages === 0 && 
+                now - browserStatus.lastUsed > BROWSER_POOL.maxIdleTime) {
+                
+                console.info('[网页预览] 关闭空闲浏览器实例');
+                this.closeBrowser().catch(() => {});
+            }
+        }, 60 * 1000); // 每分钟检查
+    }
 };
 
 export class WebScreenshot extends plugin {
@@ -659,31 +590,40 @@ export class WebScreenshot extends plugin {
             ]
         });
         
-        // 初始化配置
+        // 初始化配置 (只加载必要配置)
         this.initConfig();
         
-        // 初始化浏览器池和缓存
-        this.initSystem();
+        // 延迟清理截图
+        setTimeout(() => {
+            ensureDirectories();
+            this.cleanupScreenshots();
+        }, 30000); // 启动30秒后清理
     }
     
-    // 系统初始化
-    async initSystem() {
-        // 初始化浏览器池
-        browserPool.init();
+    // 懒加载系统初始化 - 只在第一次使用时初始化
+    lazyInitSystem() {
+        if (systemInitialized) return;
+        
+        // 确保目录存在
+        ensureDirectories();
         
         // 初始化缓存
-        await cacheManager.init();
+        cacheManager.init();
         
-        // 清理临时文件
-        WebScreenshot.cleanupScreenshots(screenshotDir);
+        // 标记已初始化
+        systemInitialized = true;
         
-        // 设置进程退出处理
+        // 设置进程退出处理 (异步)
         process.on('exit', () => {
-            browserPool.shutdown();
+            if (browserInstance) {
+                browserInstance.close().catch(() => {});
+            }
         });
+        
+        console.info('[网页预览] 系统已初始化');
     }
 
-    // 初始化配置
+    // 初始化配置 (仅加载必要配置)
     initConfig() {
         if (!fs.existsSync(configDir)) {
             fs.mkdirSync(configDir, { recursive: true });
@@ -694,7 +634,6 @@ export class WebScreenshot extends plugin {
             if (fs.existsSync(configPath)) {
                 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
                 ownerOnlyMode = config.ownerOnlyMode || false;
-                console.info(`[网页预览] 已加载配置: 仅主人可截模式=${ownerOnlyMode}`);
             } else {
                 // 创建默认配置
                 this.saveConfig();
@@ -710,7 +649,6 @@ export class WebScreenshot extends plugin {
     saveConfig() {
         try {
             fs.writeFileSync(configPath, JSON.stringify({ ownerOnlyMode }, null, 2));
-            console.info(`[网页预览] 已保存配置: 仅主人可截模式=${ownerOnlyMode}`);
         } catch (error) {
             console.error('[网页预览] 保存配置失败:', error);
         }
@@ -737,6 +675,9 @@ export class WebScreenshot extends plugin {
 
     // 自动截图
     async autoScreenshot(e) {
+        // 懒加载初始化
+        this.lazyInitSystem();
+        
         // 检查是否仅主人模式
         if (ownerOnlyMode && !e.isMaster) {
             await e.reply("🔒 当前已开启仅主人可截模式，您没有权限使用此功能");
@@ -773,7 +714,9 @@ export class WebScreenshot extends plugin {
                 return true;
             }
             
-            browser = await browserPool.getBrowser();
+            // 获取浏览器实例 (懒加载)
+            processingStage = "获取浏览器实例";
+            browser = await browserManager.getBrowser();
             if (!browser) {
                 throw new Error('浏览器实例获取失败');
             }
@@ -788,7 +731,6 @@ export class WebScreenshot extends plugin {
                     'Accept-Language': 'zh-CN,zh;q=0.9',
                     'Accept-Encoding': 'gzip, deflate, br'
                 }),
-                // 设置超时
                 page.setDefaultNavigationTimeout(30000)
             ]);
             
@@ -799,8 +741,6 @@ export class WebScreenshot extends plugin {
                 timeout: 25000
             }).catch(error => {
                 console.warn(`[网页预览] 首次加载遇到错误: ${error.message}`);
-                
-                // 如果domcontentloaded失败，尝试用networkidle2
                 return page.goto(url, {
                     waitUntil: 'networkidle2',
                     timeout: 25000
@@ -815,12 +755,11 @@ export class WebScreenshot extends plugin {
                 loadingPromise,
                 messagePromise
             ]).catch(async error => {
-                // 如果加载失败但消息发送成功，继续处理
                 if (error.message?.includes('Navigation')) {
                     console.warn(`[网页预览] 页面导航错误，尝试继续处理: ${error.message}`);
-                    return [null, loadedReply]; // 返回null表示导航失败但继续
+                    return [null, loadedReply];
                 }
-                throw error; // 其他错误继续抛出
+                throw error;
             });
             
             if (loadedReply && loadedReply.message_id) {
@@ -836,11 +775,11 @@ export class WebScreenshot extends plugin {
             // 高级截图流程
             processingStage = "截图处理";
             const screenshotProcess = async () => {
-                // 优化滚动方式 - 使用requestAnimationFrame确保平滑滚动
+                // 优化滚动方式
                 await page.evaluate(async () => {
                     const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
                     
-                    // 检测页面类型和内容加载情况
+                    // 检测页面高度
                     const pageHeight = Math.max(
                         document.body.scrollHeight,
                         document.documentElement.scrollHeight,
@@ -852,7 +791,7 @@ export class WebScreenshot extends plugin {
                     // 短页面无需滚动
                     if (pageHeight <= viewportHeight * 1.2) return;
                     
-                    // 使用requestAnimationFrame实现平滑滚动
+                    // 优化滚动
                     let lastScrollTop = window.pageYOffset;
                     const maxScrolls = Math.min(Math.ceil(pageHeight / viewportHeight) * 2, 10);
                     const scrollStep = Math.ceil(pageHeight / maxScrolls);
@@ -860,16 +799,12 @@ export class WebScreenshot extends plugin {
                     for (let i = 1; i <= maxScrolls; i++) {
                         const targetScroll = Math.min(i * scrollStep, pageHeight - viewportHeight);
                         
-                        // 使用requestAnimationFrame滚动
-                        await new Promise(resolve => {
-                            window.scrollTo({
-                                top: targetScroll,
-                                behavior: 'auto'
-                            });
-                            requestAnimationFrame(() => setTimeout(resolve, 30));
+                        window.scrollTo({
+                            top: targetScroll,
+                            behavior: 'auto'
                         });
+                        await delay(30);
                         
-                        // 检测是否已到底部或滚动停止
                         if (Math.abs(window.pageYOffset - lastScrollTop) < 10 || 
                             window.pageYOffset + viewportHeight >= pageHeight - 50) {
                             break;
@@ -902,14 +837,13 @@ export class WebScreenshot extends plugin {
                             }
                         }
                         
-                        // 额外检测网站logo作为备选
+                        // 额外检测网站logo
                         if (!logo) {
                             const imgs = Array.from(document.querySelectorAll('img'))
                                 .filter(img => img.width > 10 && img.width < 100 && 
                                        img.height > 10 && img.height < 100);
                             
                             if (imgs.length > 0) {
-                                // 找出可能的logo图片
                                 const possibleLogo = imgs.find(img => 
                                     img.src.includes('logo') || 
                                     img.alt.includes('logo') ||
@@ -937,8 +871,8 @@ export class WebScreenshot extends plugin {
                 const { title, logo } = pageInfo;
                 screenshotBase64 = initialScreenshot;
                 
-                // 使用优化的HTML模板
-                const htmlContent = screenRender(screenshotBase64, title, logo);
+                // 生成HTML模板
+                const htmlContent = getScreenTemplate(screenshotBase64, title, logo);
                 
                 // 设置页面内容
                 await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
@@ -993,6 +927,7 @@ export class WebScreenshot extends plugin {
             
             // 保存截图到文件
             processingStage = "保存和发送";
+            ensureDirectories();
             const fileName = `screenshot_${Date.now()}.jpeg`;
             const filePath = path.join(screenshotDir, fileName);
             
@@ -1038,7 +973,7 @@ export class WebScreenshot extends plugin {
                 }
                 
                 if (browser) {
-                    browserPool.releaseBrowser(browser);
+                    browserManager.releaseBrowser();
                 }
             } catch (e) {
                 console.error('[网页预览] 资源清理错误:', e);
@@ -1046,46 +981,32 @@ export class WebScreenshot extends plugin {
         }
     }
 
-    static async findChromePath() {
-        const paths = chromePaths[process.platform] || chromePaths.linux;
-        for (const p of paths) {
-            try {
-                if (fs.existsSync(p)) {
-                    return p;
-                }
-            } catch (e) {
-                continue;
-            }
-        }
-        console.warn('[网页预览] 未找到 Chrome 可执行文件，将尝试使用默认 Chromium');
-        return null;
-    }
-
-    static cleanupScreenshots(screenshotDir) {
-        const now = Date.now();
-        fs.readdir(screenshotDir, (err, files) => {
-            if (err) return;
-            
-            let deletedCount = 0;
-            files.forEach(file => {
-                if (!file.startsWith('screenshot_')) return;
+    // 清理截图文件
+    cleanupScreenshots() {
+        try {
+            const now = Date.now();
+            fs.readdir(screenshotDir, (err, files) => {
+                if (err) return;
                 
-                const filePath = path.join(screenshotDir, file);
-                fs.stat(filePath, (err, stat) => {
-                    if (err) return;
-                    const elapsed = now - stat.ctimeMs;
-                    if (elapsed > 15 * 60 * 1000) { // 15分钟后删除
-                        fs.unlink(filePath, () => { 
-                            deletedCount++;
-                        });
-                    }
+                let deletedCount = 0;
+                files.forEach(file => {
+                    if (!file.startsWith('screenshot_')) return;
+                    
+                    const filePath = path.join(screenshotDir, file);
+                    fs.stat(filePath, (err, stat) => {
+                        if (err) return;
+                        const elapsed = now - stat.ctimeMs;
+                        if (elapsed > 15 * 60 * 1000) { // 15分钟后删除
+                            fs.unlink(filePath, () => { 
+                                deletedCount++;
+                            });
+                        }
+                    });
                 });
             });
-            
-            if (deletedCount > 0) {
-                console.info(`[网页预览] 已清理 ${deletedCount} 个临时截图文件`);
-            }
-        });
+        } catch (e) {
+            console.error('[网页预览] 清理截图失败:', e);
+        }
     }
 }
 
