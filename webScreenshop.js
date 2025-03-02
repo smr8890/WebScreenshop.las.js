@@ -749,12 +749,12 @@ export class WebScreenshot extends plugin {
             });
 
             // 同时发送加载消息
-            const messagePromise = e.reply(`✅ 正在加载网页${isForced ? '(强制模式)' : ''}...`);
+            // const messagePromise = e.reply(`✅ 正在加载网页${isForced ? '(强制模式)' : ''}...`);
 
             // 等待两个Promise都完成
             const [loadedPage, loadedReply] = await Promise.all([
                 loadingPromise,
-                messagePromise
+                // messagePromise
             ]).catch(async error => {
                 if (error.message?.includes('Navigation')) {
                     logger.warn(`[网页预览] 页面导航错误，尝试继续处理: ${error.message}`);
@@ -768,7 +768,7 @@ export class WebScreenshot extends plugin {
             }
 
             // 更新加载消息
-            const processingReply = await e.reply('✅ 网页加载完成，正在处理截图...');
+            const processingReply = await e.reply('✅ 网页加载完成，正在处理截图并发送...');
             if (processingReply && processingReply.message_id) {
                 replyMsgIds.push(processingReply.message_id);
             }
